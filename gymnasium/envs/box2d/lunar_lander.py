@@ -217,6 +217,7 @@ class LunarLander(gym.Env, EzPickle):
         self,
         render_mode: Optional[str] = None,
         continuous: bool = False,
+        mixed: bool = False,
         gravity: float = -10.0,
         enable_wind: bool = False,
         wind_power: float = 15.0,
@@ -226,6 +227,7 @@ class LunarLander(gym.Env, EzPickle):
             self,
             render_mode,
             continuous,
+            mixed,
             gravity,
             enable_wind,
             wind_power,
@@ -262,6 +264,7 @@ class LunarLander(gym.Env, EzPickle):
         self.prev_reward = None
 
         self.continuous = continuous
+        self.mixed = mixed
 
         low = np.array(
             [
@@ -304,6 +307,13 @@ class LunarLander(gym.Env, EzPickle):
             # Main engine: -1..0 off, 0..+1 throttle from 50% to 100% power. Engine can't work with less than 50% power.
             # Left-right:  -1.0..-0.5 fire left engine, +0.5..+1.0 fire right engine, -0.5..0.5 off
             self.action_space = spaces.Box(-1, +1, (2,), dtype=np.float32)
+        elif self.mixed:
+            self.action_space = spaces.Tuple((
+                # Main engine - 0-off, 1-on
+                spaces.Discrete(2),
+                # Left-right:  -1.0..-0.5 fire left engine, +0.5..+1.0 fire right engine, -0.5..0.5 off
+                spaces.Box(-1, +1, (1,), dtype=np.float32),
+            ))
         else:
             # Nop, fire left engine, main engine, right engine
             self.action_space = spaces.Discrete(4)
@@ -448,6 +458,11 @@ class LunarLander(gym.Env, EzPickle):
 
         if self.render_mode == "human":
             self.render()
+
+        if self.mixed:
+            reset_action = (0, np.array([0], dtype=np.float32))
+            return self.step(reset_action)[0], {}
+        
         return self.step(np.array([0, 0]) if self.continuous else 0)[0], {}
 
     def _create_particle(self, mass, x, y, ttl):
@@ -512,6 +527,10 @@ class LunarLander(gym.Env, EzPickle):
 
         if self.continuous:
             action = np.clip(action, -1, +1).astype(np.float32)
+        elif self.mixed:   
+            action_list = list(action)
+            action_list[1] = np.clip(action_list[1], -1, +1).astype(np.float32)
+            action = tuple(action_list)
         else:
             assert self.action_space.contains(
                 action
@@ -529,13 +548,15 @@ class LunarLander(gym.Env, EzPickle):
         dispersion = [self.np_random.uniform(-1.0, +1.0) / SCALE for _ in range(2)]
 
         m_power = 0.0
-        if (self.continuous and action[0] > 0.0) or (
+        if (self.continuous and action[0] > 0.0) or (self.mixed and action[0]==1 ) or (
             not self.continuous and action == 2
         ):
             # Main engine
             if self.continuous:
                 m_power = (np.clip(action[0], 0.0, 1.0) + 1.0) * 0.5  # 0.5..1.0
                 assert m_power >= 0.5 and m_power <= 1.0
+            elif self.mixed:
+                m_power = 1.0
             else:
                 m_power = 1.0
 
@@ -574,13 +595,17 @@ class LunarLander(gym.Env, EzPickle):
             )
 
         s_power = 0.0
-        if (self.continuous and np.abs(action[1]) > 0.5) or (
+        if (self.continuous and np.abs(action[1]) > 0.5) or (self.mixed and np.abs(action[1][0]) > 0.5) or (
             not self.continuous and action in [1, 3]
         ):
             # Orientation/Side engines
             if self.continuous:
                 direction = np.sign(action[1])
                 s_power = np.clip(np.abs(action[1]), 0.5, 1.0)
+                assert s_power >= 0.5 and s_power <= 1.0
+            elif self.mixed:
+                direction = np.sign(action[1][0])
+                s_power = np.clip(np.abs(action[1][0]), 0.5, 1.0)
                 assert s_power >= 0.5 and s_power <= 1.0
             else:
                 # action = 1 is left, action = 3 is right
